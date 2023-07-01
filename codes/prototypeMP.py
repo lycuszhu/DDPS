@@ -2,12 +2,12 @@ import pandas as pd
 import numpy as np
 from scipy import stats
 from tqdm import tqdm
-#import mass_ts as mts
 import mp
+import utils
 from scipy.signal import find_peaks
 from multiprocessing import Pool
 
-def _baseline_class(label,X,y,n_candidates,max_l):
+def _prototypeMP_class(label,X,y,n_candidates,max_l):
     XA = np.concatenate([np.append(Ti, np.nan) for Ti in X[y==label]], axis=None)
     XB = np.concatenate([np.append(Ti, np.nan) for Ti in X[y!=label]], axis=None)
     
@@ -41,7 +41,7 @@ def _baseline_class(label,X,y,n_candidates,max_l):
     # return candidates and index
     return (label, A_candidates, A_cand_idx)
 
-def baseline_candidates(X, y, n_candidates=20, max_length=0.5):
+def prototypeMP_candidates(X, y, n_candidates=20, max_length=0.5, overlap=False):
     """candidates searching with matrix profile
     collect top n candidates of each length with
     scipy.signal.find_peak package
@@ -62,66 +62,16 @@ def baseline_candidates(X, y, n_candidates=20, max_length=0.5):
     candidates={}
     cand_idx={}    
     
-    # concatenate target class and rest classes into long series    
+    # parallel running candidate searching from each class on multiple cores
     p = Pool(processes=len(classes))
-    results = [p.apply_async(_baseline_class, args=(label, X, y, n_candidates, max_l)) for label in classes]
+    results = [p.apply_async(_prototypeMP_class, args=(label, X, y, n_candidates, max_l)) for label in classes]
     p.close
     p.join
     for item in results:
         candidates[item.get()[0]]=item.get()[1]
         cand_idx[item.get()[0]]=item.get()[2]
     
-    return candidates, cand_idx
-
-def _strict_overlap(a, b):
-    if a[1]<=b[1]<a[0]+a[1] or a[1]<b[0]+b[1]<=a[0]+a[1]:
-        return True
-    elif a[1]>=b[1] and a[0]+a[1]<=b[0]+b[1]:
-        return True
-    else:
-        return False
-
-def _loose_overlap(a, b):
-    l = min(a[0], b[0])/2
-    if a[1]<=b[1]<a[0]+a[1]-l or a[1]+l<b[0]+b[1]<=a[0]+a[1]:
-        return True
-    elif a[1]>=b[1] and a[0]+a[1]<=b[0]+b[1]:
-        return True
-    else:
-        return False
-    
-def _remove_overlap(classes, candidates, cand_idx, overlap):
-    cand_keep, idx_keep = {},{}
-    for i in classes:
-        i_cand, i_idx = [],[]
-        if overlap == 'loose':
-            print('loose')
-            for cand, idx in zip(candidates[i],cand_idx[i]):
-                if any([_loose_overlap(shapelet, idx) for shapelet in i_idx]):
-                    pass
-                else:
-                    i_cand.append(cand), i_idx.append(idx)
-        else:
-            print('strict')
-            for cand, idx in zip(candidates[i],cand_idx[i]):
-                if any([_strict_overlap(selected, idx) for selected in i_idx]):
-                    pass
-                else:
-                    i_cand.append(cand), i_idx.append(idx)
-        cand_keep[i] = np.array(i_cand, dtype=object)
-        idx_keep[i] = np.array(i_idx)
-    return cand_keep, idx_keep
-    
-def sort_by_quality(X, y, n_candidates=20, max_length=0.5, overlap=False):
-    """sort candidates by quality measures
-    quality measures: run two-sample t-test of candidate distances between target class instances and other classes instances, using the p-value as the quality measure.
-    
-    Arguments
-    ---------
-    
-    """
-    classes = np.unique(y)
-    candidates, cand_idx = baseline_candidates(X, y, n_candidates, max_length)
+    # sort candidates by quality measure
     sorted_candidates={}
     sorted_cand_idx={}
     for label in classes:
@@ -139,20 +89,5 @@ def sort_by_quality(X, y, n_candidates=20, max_length=0.5, overlap=False):
         return sorted_candidates, sorted_cand_idx
     else:
         print('yes')
-        cand_keep, idx_keep = _remove_overlap(classes, sorted_candidates, sorted_cand_idx, overlap=overlap)
+        cand_keep, idx_keep = utils.remove_overlap(classes, sorted_candidates, sorted_cand_idx, overlap=overlap)
         return cand_keep, idx_keep
-
-
-def best_shapelets(classes, sorted_candidates, sorted_cand_idx, k=2):
-    best_shapelets, best_s_idx = [],{}
-    for label in classes:
-        best_shapelets+=[sorted_candidates[label][i] for i in range(k)]
-        best_s_idx[label]=sorted_cand_idx[label][:k]        
-        
-    return best_shapelets, best_s_idx
-
-
-def transform(X, best_shapelets):
-    transformed_X = np.array([[np.nan_to_num(mp.mass(ts, query),nan=np.inf).min() for ts in X] for query in best_shapelets]).real
-    
-    return transformed_X

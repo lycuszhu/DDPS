@@ -9,7 +9,8 @@ from sklearn.naive_bayes import GaussianNB
 #from rotation_forest import RotationForestClassifier as RotF
 from sktime.classification.sklearn import RotationForest as RotF
 #from sklearn.ensemble import VotingClassifier
-    
+from collections import Counter
+
 class VotingClassifier:
     def __init__(
         self,
@@ -42,14 +43,14 @@ def _get_weight(X,y):
     clf6 = GaussianNB()
     clf7 = RotF(n_estimators=100)
     
+    # determine folds of cross validation, which cannot be greater than least counts of elements in y
+    least_count = min(Counter(y).values())
+    folds = max(min(least_count,5),2)
+    
     estimators = [('SVM_L',clf1),('SVM_Q',clf2),('RanF',clf3),('KNN',clf4),('C45',clf5),('NB',clf6),('RotF',clf7)]
-    #box = np.array([1,1,2,2,4,4])
-    #box = np.array([1,1,4,4,2,2])
-    #box = np.array([4,4,2,2,1,1])
-    #box = np.array([1,2,4,1,2,4])
     acc = []
     for (label,clf) in estimators:
-        acc.append(np.mean(cross_val_score(clf,X,y,scoring='accuracy',cv=5)))
+        acc.append(np.mean(cross_val_score(clf,X,y,scoring='accuracy',cv=folds)))
     #weights = np.array([box[np.argwhere(np.argsort(acc)==i)] for i in range(7)]).reshape(-1)
     weights = np.array(acc)
     #classifier = estimators[np.argmax(weights)][0]

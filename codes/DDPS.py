@@ -3,47 +3,32 @@ import numpy as np
 from scipy import stats
 from tqdm import tqdm
 import mp
-from scipy.stats import mannwhitneyu
+import utils
+from scipy.stats import shapiro
+from scipy.stats import ttest_ind
+from scipy.stats import kstest, norm
 from multiprocessing import Pool
 
-def _strict_overlap(a, b):
-    if a[1]<=b[1]<a[0]+a[1] or a[1]<b[0]+b[1]<=a[0]+a[1]:
-        return True
-    elif a[1]>=b[1] and a[0]+a[1]<=b[0]+b[1]:
-        return True
-    else:
-        return False
-
-def _loose_overlap(a, b):
-    l = min(a[0], b[0])/2
-    if a[1]<=b[1]<a[0]+a[1]-l or a[1]+l<b[0]+b[1]<=a[0]+a[1]:
-        return True
-    elif a[1]>=b[1] and a[0]+a[1]<=b[0]+b[1]:
-        return True
-    else:
-        return False
+def quality_measure(sample1, sample2):
+    """Candidate quality measured by testing how well their distance distributions differ between classes.
+    Default method is a combined test of two-sampled t-test and Kolmogorov-Smirnov test. 
+    Weights assigned to the tests are from distribution normality detection with Shapiro-Wilk test.
     
-def _remove_overlap(classes, candidates, cand_idx, overlap):
-    cand_keep, idx_keep = {},{}
-    for i in classes:
-        i_cand, i_idx = [],[]
-        if overlap == 'loose':
-            print('loose')
-            for cand, idx in zip(candidates[i],cand_idx[i]):
-                if any([_loose_overlap(shapelet, idx) for shapelet in i_idx]):
-                    pass
-                else:
-                    i_cand.append(cand), i_idx.append(idx)
-        else:
-            print('strict')
-            for cand, idx in zip(candidates[i],cand_idx[i]):
-                if any([_strict_overlap(selected, idx) for selected in i_idx]):
-                    pass
-                else:
-                    i_cand.append(cand), i_idx.append(idx)
-        cand_keep[i] = np.array(i_cand, dtype=object)
-        idx_keep[i] = np.array(i_idx)
-    return cand_keep, idx_keep
+    Args:
+        sample1, sample2 (array-like): distance distributions from different classes to 
+        test candidate quality.
+        
+    Returns:
+        weighted average of p-values from t-test and KS-test.
+    
+    """    
+    try:
+        x = (shapiro(sample1)[1] + shapiro(sample2)[1])/2 #weight of parametric test
+    except:
+        x = (kstest(sample1, norm.cdf)[1] + kstest(sample2, norm.cdf)[1])/2 # if sample size too small for Shapiro, use ks-test instead
+    w_p = 1 / (1 + np.exp(-np.log(20*x)))
+    w_np = 1-w_p #weight of non-parametric test    
+    return ttest_ind(sample1, sample2)[1]*w_p + kstest(sample1, sample2)[1]*w_np
 
 def _ddp_class(label, X, y, n_candidates, max_l):
     XA = np.concatenate([np.append(Ti, np.nan) for Ti in X[y==label]], axis=None)
@@ -53,8 +38,8 @@ def _ddp_class(label, X, y, n_candidates, max_l):
     for l in tqdm(range(3,min(200,max_l+1))):
         A,B = X[y==label], X[y!=label]
         
-        #initialize distance distribution matrix
-        pAA, pAB = [],[]
+        # initialize distance distribution matrix (ddm)
+        pAA, pAB = [],[]            
         
         # update ddm
         for instance in A:
@@ -67,8 +52,8 @@ def _ddp_class(label, X, y, n_candidates, max_l):
             pAB.append(newValue)
         pAB = np.array(pAB).transpose()
         
-        #quality measure
-        quality = np.array([mannwhitneyu(sample1, sample2)[1] for sample1, sample2 in zip(pAA, pAB)])
+        # quality measure
+        quality = np.array([quality_measure(sample1, sample2) for sample1, sample2 in zip(pAA, pAB)])
         idx = np.argsort(quality)
         cand = np.array([XA[i:i+l] for i in idx])
         
@@ -98,7 +83,7 @@ def DDP_candidates(X, y, n_candidates=20, max_length=0.5, overlap=False):
     candidates={}
     cand_idx={}
     
-    # concatenate target class instances and calculate MP against instances within same class and other classes 
+    # parallel running candidate searching from each class on multiple cores 
     p = Pool(processes=len(classes))
     results = [p.apply_async(_ddp_class, args=(label, X, y, n_candidates, max_l)) for label in classes]
     p.close
@@ -112,22 +97,5 @@ def DDP_candidates(X, y, n_candidates=20, max_length=0.5, overlap=False):
         return candidates, cand_idx
     else:
         print('yes')
-        cand_keep, idx_keep = _remove_overlap(classes, candidates, cand_idx, overlap=overlap)
+        cand_keep, idx_keep = utils.remove_overlap(classes, candidates, cand_idx, overlap=overlap)
         return cand_keep, idx_keep
-
-def best_shapelets(classes, sorted_candidates, sorted_cand_idx, k=2):
-    best_shapelets, best_s_idx = [],{}
-    for label in classes:
-        best_shapelets+=[sorted_candidates[label][i] for i in range(k)]
-        best_s_idx[label]=sorted_cand_idx[label][:k]        
-        
-    return best_shapelets, best_s_idx
-
-
-def transform(X, best_shapelets):
-    transformed_X = np.array([[np.nan_to_num(mp.mass(ts, query), nan=np.inf).min() for ts in X] for query in best_shapelets]).real
-    
-    return transformed_X
-
-
-
